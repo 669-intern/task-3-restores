@@ -1,0 +1,87 @@
+-- Apex Phase 2C: targeted pre-cleanup backup and rollback SQL.
+-- Captured from Supabase project inovaclxtkcfnnzzymii on 2026-11-26.
+-- RUN ONLY IF THE THREE LEGACY OBJECTS HAVE BEEN REMOVED AND RESTORATION IS APPROVED.
+-- Restores the observed original permissions, including PUBLIC execution of
+-- the legacy SECURITY DEFINER functions. Do not run them as a replacement
+-- for the active per-site numbering mechanism. No old trigger is recreated.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
+CREATE TABLE public.finance_expenditure_sequences (
+    approval_year integer NOT NULL,
+    approval_month integer NOT NULL,
+    last_number integer NOT NULL DEFAULT 0,
+    CONSTRAINT finance_expenditure_sequences_approval_month_check
+        CHECK (approval_month >= 1 AND approval_month <= 12),
+    CONSTRAINT finance_expenditure_sequences_pkey
+        PRIMARY KEY (approval_year, approval_month)
+);
+ALTER TABLE public.finance_expenditure_sequences OWNER TO postgres;
+ALTER TABLE public.finance_expenditure_sequences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.finance_expenditure_sequences NO FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.finance_expenditure_sequences FROM PUBLIC;
+GRANT ALL PRIVILEGES ON TABLE public.finance_expenditure_sequences
+    TO postgres, anon, authenticated, service_role;
+
+INSERT INTO public.finance_expenditure_sequences
+    (approval_year, approval_month, last_number)
+VALUES (2026, 10, 2);
+
+CREATE FUNCTION public.next_finance_ar_number(p_approval_date date)
+ RETURNS text
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$
+DECLARE
+    v_year integer;
+    v_number integer;
+BEGIN
+    IF p_approval_date IS NULL THEN
+        RAISE EXCEPTION 'Approval date is required to generate an AR number';
+    END IF;
+
+    v_year := EXTRACT(YEAR FROM p_approval_date)::integer;
+
+    INSERT INTO public.finance_expenditure_sequences
+        (approval_year, approval_month, last_number)
+    VALUES
+        (v_year, 1, 1)
+    ON CONFLICT (approval_year, approval_month)
+    DO UPDATE
+        SET last_number =
+            public.finance_expenditure_sequences.last_number + 1
+    RETURNING last_number INTO v_number;
+
+    RETURN 'QUADRO/AR/'
+        || v_year::text
+        || '/'
+        || UPPER(TO_CHAR(p_approval_date, 'MON'))
+        || '/'
+        || LPAD(v_number::text, 3, '0');
+END;
+$function$;
+ALTER FUNCTION public.next_finance_ar_number(date) OWNER TO postgres;
+GRANT EXECUTE ON FUNCTION public.next_finance_ar_number(date)
+    TO PUBLIC, postgres, anon, authenticated, service_role;
+
+CREATE FUNCTION public.set_finance_expenditure_ar_number()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$
+BEGIN
+    IF NEW.ar_number IS NULL OR BTRIM(NEW.ar_number) = '' THEN
+        NEW.ar_number :=
+            public.next_finance_ar_number(NEW.approval_date);
+    END IF;
+
+    RETURN NEW;
+END;
+$function$;
+ALTER FUNCTION public.set_finance_expenditure_ar_number() OWNER TO postgres;
+GRANT EXECUTE ON FUNCTION public.set_finance_expenditure_ar_number()
+    TO PUBLIC, postgres, anon, authenticated, service_role;
+
+COMMIT;
