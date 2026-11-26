@@ -1,0 +1,10 @@
+BEGIN;
+
+ALTER TABLE public.insurance_claims
+    ADD COLUMN IF NOT EXISTS closure_reason text;
+
+ALTER TABLE public.insurance_policies
+    ADD COLUMN IF NOT EXISTS cancellation_date date,
+    ADD COLUMN IF NOT EXISTS cancellation_reason text;
+
+COMMIT;
